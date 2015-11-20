@@ -30,8 +30,9 @@ struct karma_ssid {
         char ssid_txt[HOSTAPD_MAX_SSID_LEN+1];
         u8 ssid[HOSTAPD_MAX_SSID_LEN];
         size_t ssid_len;
-	u8 sta_addr[6];
-	unsigned int hit;
+		u8 sta_addr[6];
+		double weight;
+		unsigned int sid;
         UT_hash_handle hh;
 	
 };

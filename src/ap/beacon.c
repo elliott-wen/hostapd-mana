@@ -9,7 +9,7 @@
  */
 
 #include "utils/includes.h"
-
+#include <time.h>
 #ifndef CONFIG_NATIVE_WINDOWS
 
 #include "utils/common.h"
@@ -32,17 +32,89 @@
 //KARMA START
 #define TBUFFERSIZE 1024
 #define DEST_PORT 20480
-
+#define MAX_SID 204800
+unsigned int current_sid = 1;
 struct karma_ssid *karma_data = NULL;
 int first_init = 1;
-int preload_num = 0;
+
 int probereq_udp_socket = -1;
 struct sockaddr_in  addr_client;
 char  send_buf[TBUFFERSIZE];
-int sort_karma_data(struct karma_ssid* a, struct karma_ssid* b)
-{
-	return a->hit-b->hit;
+char last_response_address[ETH_ALEN];
+double last_response_time;
+
+//double last_enter_time=0;
+// int sort_karma_data(struct karma_ssid* a, struct karma_ssid* b)
+// {
+// 	return a->hit-b->hit;
+// }
+double current_timestamp() {
+    struct timeval te; 
+    gettimeofday(&te, NULL); // get current time
+    long long milliseconds = te.tv_sec*1000LL + te.tv_usec/1000; // caculate milliseconds
+    return milliseconds;
 }
+double randMToN(double M, double N)
+{
+	
+    return M + (rand() / ( RAND_MAX / (N-M) ) ) ;  
+}
+int is_sampled(unsigned int *samples, unsigned int sample_size, unsigned int number)
+{
+	int j = 0;
+	for(j=0;j<sample_size;j++)
+	{
+		if(number == samples[j])
+		{
+			//printf("Already sampled\n");
+			return 1;
+		}	
+	}
+	return 0;
+}
+void sample_ssids_from_pool(unsigned int *samples, unsigned int sample_size)
+{
+	
+	int j = 0;
+	struct karma_ssid *k;
+	if(sample_size==0) return;
+	for(j=0;j<sample_size;j++)
+	{
+		samples[j] = 0;
+	}
+	for(j=0;j<sample_size;j++)
+	{
+		double totalWeight = 0;
+
+		for ( k = karma_data; k != NULL; k = (struct karma_ssid*)(k->hh.next))
+		{
+			if(!is_sampled(samples,sample_size,k->sid))
+			{
+				totalWeight += k->weight;
+			}
+		}
+		
+		double random_num = randMToN(0,totalWeight);
+		
+		for ( k = karma_data; k != NULL; k = (struct karma_ssid*)(k->hh.next))
+		{
+			if(!is_sampled(samples,sample_size,k->sid))
+			{
+				random_num -= k->weight;
+				if(random_num<0)
+				{
+					samples[j]=k->sid;
+					//printf(" %d",k->sid);
+					break;
+				}
+			}
+		}
+		
+	}
+	
+	
+}
+
 // KARMA END
 
 #ifdef NEED_AP_MLME
@@ -536,7 +608,7 @@ void handle_probe_req(struct hostapd_data *hapd,
 	int noack;
 	enum ssid_match_result res;
 	int iterate = 0;
-
+	int preload_num = 0;
 	ie = mgmt->u.probe_req.variable;
 	if (len < IEEE80211_HDRLEN + sizeof(mgmt->u.probe_req))
 		return;
@@ -642,15 +714,14 @@ void handle_probe_req(struct hostapd_data *hapd,
 				sta->ssid_probe_karma->ssid_len = elems.ssid_len;
 			}
 			//Pop up list from local file
-			//DRSHEN
 			if (first_init == 1)
 			{
 				first_init = 0;
-
+				srand(time(0));
 				if ((probereq_udp_socket = socket(AF_INET, SOCK_DGRAM, 0)) < 0) 
 				{
-					wpa_printf(MSG_INFO, "Failed to create a udp socket.");
-					exit(10);
+					wpa_printf(MSG_ERROR, "Failed to create a udp socket.");
+					//exit(10);
 				}
 				else
 				{
@@ -658,8 +729,8 @@ void handle_probe_req(struct hostapd_data *hapd,
 					addr_client.sin_family = AF_INET;
 					addr_client.sin_port = htons(DEST_PORT);
 					if(inet_aton("127.0.0.1",&addr_client.sin_addr)<0){
-           					wpa_printf(MSG_INFO, "Unable to set udp address!");
-           					exit(10);
+           					wpa_printf(MSG_ERROR, "Unable to set udp address!");
+           					//exit(10);
 					}
 				}
 				FILE *list;
@@ -680,21 +751,22 @@ void handle_probe_req(struct hostapd_data *hapd,
 					if(strlen(essid))
 					{
 						struct karma_ssid *d = NULL;
-						wpa_printf(MSG_INFO, "MANA FIRST INIT - Adding SSID %s:%d for STA to the hash.", essid, strlen(essid));
+						wpa_printf(MSG_INFO, "MANA FIRST INIT - Adding SSID %s:%zu for STA to the hash.", essid, strlen(essid));
 						d = (struct karma_ssid*)os_malloc(sizeof(struct karma_ssid));
 						os_memcpy(d->ssid_txt, essid, strlen(essid)+1);
 						os_memcpy(d->ssid, essid, strlen(essid));
 						d->ssid_len = strlen(essid);
-						d->hit = 5;
+						d->weight = 1;
+						d->sid = current_sid ++;
 						//os_memcpy(d->sta_addr, mgmt->sa, ETH_ALEN);
 						HASH_ADD_STR(karma_data, ssid_txt, d);
 						preload_num ++;
 					}
-					if(preload_num>=hapd->iconf->karma_pool_size/2)
-					{
-						wpa_printf(MSG_INFO, "MANA TOO MUCH SSIDs");
-						break;
-					}
+					// if(preload_num>=hapd->iconf->karma_pool_size/2)
+					// {
+					// 	wpa_printf(MSG_INFO, "MANA TOO MUCH SSIDs");
+					// 	break;
+					// }
 					
 				    }
 				    wpa_printf(MSG_INFO, "MANA Preload SSIDS: %d.", preload_num);
@@ -710,17 +782,18 @@ void handle_probe_req(struct hostapd_data *hapd,
 				os_memcpy(d->ssid_txt, wpa_ssid_txt(elems.ssid, elems.ssid_len), elems.ssid_len+1);
 				os_memcpy(d->ssid, elems.ssid, elems.ssid_len);
 				d->ssid_len = elems.ssid_len;
-				d->hit = 1;
+				d->weight = 1;
+				d->sid = current_sid ++;
 				os_memcpy(d->sta_addr, mgmt->sa, ETH_ALEN);
 				HASH_ADD_STR(karma_data, ssid_txt, d);
 				
-				if(HASH_COUNT(karma_data)>=hapd->iconf->karma_pool_size)
-				{
-					HASH_SORT(karma_data, sort_karma_data);
-					struct karma_ssid *k = karma_data;
-					wpa_printf(MSG_INFO, "MANA delete ssid %s, hit count:%d", k->ssid_txt,k->hit);
-					HASH_DEL(karma_data, k);					
-				}
+				// if(HASH_COUNT(karma_data)>=hapd->iconf->karma_pool_size)
+				// {
+				// 	HASH_SORT(karma_data, sort_karma_data);
+				// 	struct karma_ssid *k = karma_data;
+				// 	wpa_printf(MSG_INFO, "MANA delete ssid %s, hit count:%d", k->ssid_txt,k->hit);
+				// 	HASH_DEL(karma_data, k);					
+				// }
 			}
 		} else { //No SSID Match and no Karma behave as normal
 			if (!(mgmt->da[0] & 0x01)) {
@@ -813,39 +886,89 @@ void handle_probe_req(struct hostapd_data *hapd,
 	if (hostapd_drv_send_mlme(hapd, resp, resp_len, noack) < 0)
 		wpa_printf(MSG_INFO, "handle_probe_req: send failed");
 	os_free(resp);
-
-	if (iterate) { // Only iterate through the hash if this is set
-		struct karma_ssid *k;
-		for ( k = karma_data; k != NULL; k = (struct karma_ssid*)(k->hh.next))
+	//=========Filter=============
+	if ( os_memcmp(last_response_address, mgmt->sa, ETH_ALEN) == 0)
+	{
+		if(current_timestamp()-last_response_time<200)
 		{
-			u8 *resp2;
-			size_t resp2_len;
-			int flag = 0;
-			if (hapd->iconf->karma_loud) {
-				wpa_printf(MSG_MSGDUMP, "MANA - Generated LOUD Broadcast response : %s (%zu) for STA " MACSTR, k->ssid_txt, k->ssid_len, MAC2STR(k->sta_addr));
-				resp2 = hostapd_gen_probe_resp(hapd, sta, k->ssid, k->ssid_len, mgmt, elems.p2p != NULL, &resp2_len);
-				flag = 1;
-			} else { //non-loud karma mode
-				if (os_memcmp(k->sta_addr, mgmt->sa, ETH_ALEN) == 0) {
-					wpa_printf(MSG_MSGDUMP, "MANA - Generated Broadcast response : %s (%zu) for STA " MACSTR, k->ssid_txt, k->ssid_len, MAC2STR(k->sta_addr));
+			wpa_printf(MSG_MSGDUMP,
+			   "MANA: Too many probe requests from " MACSTR,
+			   MAC2STR(mgmt->sa));
+			return;
+		}
+		else
+		{
+			last_response_time = current_timestamp();
+		}
+	}
+	else
+	{
+		os_memcpy(last_response_address, mgmt->sa, ETH_ALEN);
+		last_response_time = current_timestamp();
+	}
+	// wpa_printf(MSG_INFO, "%lf Enter the loop" MACSTR, current_timestamp()-last_enter_time,MAC2STR(mgmt->sa));
+	// last_enter_time = current_timestamp();
+	//========Filter===============
+	//========Karma================
+	if (iterate) { // Only iterate through the hash if this is set
+		unsigned int sample_size = 0;
+		unsigned int *samples;
+		struct karma_ssid* k;
+		int j = 0;
+		if(HASH_COUNT(karma_data)>=hapd->iconf->karma_pool_size)
+		{
+			sample_size=hapd->iconf->karma_pool_size;
+		}
+		else
+		{
+			sample_size=HASH_COUNT(karma_data);
+		}
+		samples = os_malloc(sample_size*sizeof(unsigned int));
+		sample_ssids_from_pool(samples,sample_size);
+		// printf(" %d", sample_size);
+		// for(j=0;j<sample_size;j++)
+		// {
+		// 	printf(" %d",samples[j]);
+		// }
+		// printf(" \n");
+		for(j=0;j<sample_size;j++)
+		{
+
+			for ( k = karma_data; k != NULL; k = (struct karma_ssid*)(k->hh.next))
+			{
+				if(k->sid!=samples[j])
+				{
+					continue;
+				}
+				u8 *resp2;
+				size_t resp2_len;
+				int flag = 0;
+				if (hapd->iconf->karma_loud) {
+					wpa_printf(MSG_MSGDUMP, "MANA - Generated LOUD Broadcast response : %s (%zu) for STA " MACSTR, k->ssid_txt, k->ssid_len, MAC2STR(k->sta_addr));
 					resp2 = hostapd_gen_probe_resp(hapd, sta, k->ssid, k->ssid_len, mgmt, elems.p2p != NULL, &resp2_len);
 					flag = 1;
-				}
-			}
-			if (flag == 1) {
-				if (resp2 == NULL) {
-					wpa_printf(MSG_ERROR, "MANA - Could not generate SSID response for %s (%zu)", k->ssid_txt, k->ssid_len);
-				} else {
-					wpa_printf(MSG_MSGDUMP, "MANA - Successfully generated SSID response for %s (len %zu) :)", k->ssid_txt, k->ssid_len);
-					if (hostapd_drv_send_mlme(hapd, resp2, resp2_len, noack) < 0) {
-						wpa_printf(MSG_ERROR, "MANA - Failed sending prove response for SSID %s (%zu)", k->ssid_txt, k->ssid_len);
+				} else { //non-loud karma mode
+					if (os_memcmp(k->sta_addr, mgmt->sa, ETH_ALEN) == 0) {
+						wpa_printf(MSG_MSGDUMP, "MANA - Generated Broadcast response : %s (%zu) for STA " MACSTR, k->ssid_txt, k->ssid_len, MAC2STR(k->sta_addr));
+						resp2 = hostapd_gen_probe_resp(hapd, sta, k->ssid, k->ssid_len, mgmt, elems.p2p != NULL, &resp2_len);
+						flag = 1;
 					}
-					os_free(resp2);
+				}
+				if (flag == 1) {
+					if (resp2 == NULL) {
+						wpa_printf(MSG_ERROR, "MANA - Could not generate SSID response for %s (%zu)", k->ssid_txt, k->ssid_len);
+					} else {
+						wpa_printf(MSG_MSGDUMP, "MANA - Successfully generated SSID response for %s (len %zu) :)", k->ssid_txt, k->ssid_len);
+						if (hostapd_drv_send_mlme(hapd, resp2, resp2_len, noack) < 0) {
+							wpa_printf(MSG_ERROR, "MANA - Failed sending prove response for SSID %s (%zu)", k->ssid_txt, k->ssid_len);
+						}
+						os_free(resp2);
+					}
 				}
 			}
 		}
 	}
-	
+	//===========Karma=======================
 	wpa_printf(MSG_EXCESSIVE, "STA " MACSTR " sent probe request for %s "
 		   "SSID", MAC2STR(mgmt->sa),
 		   elems.ssid_len == 0 ? "broadcast" : "our");

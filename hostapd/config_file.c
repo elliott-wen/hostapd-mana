@@ -3229,7 +3229,7 @@ struct hostapd_config * hostapd_config_read(const char *fname)
 	// KARMA START
 	conf->enable_karma = 1; //default off
 	conf->karma_loud = 1; //default off
-	conf->karma_pool_size = 10;
+	conf->karma_pool_size = 80;
 	// KARMA END
 
 	while (fgets(buf, sizeof(buf), f)) {

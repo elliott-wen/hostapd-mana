@@ -795,8 +795,8 @@ static u16 check_ssid(struct hostapd_data *hapd, struct sta_info *sta,
 		HASH_FIND_STR(karma_data, wpa_ssid_txt(ssid_ie, ssid_ie_len), d);
 		if(d!=NULL)
 		{		
-			d->hit = d->hit + 1;
-			wpa_printf(MSG_INFO, "MANA - Update %s, hit: %d", wpa_ssid_txt(ssid_ie, ssid_ie_len), d->hit);
+			//d->hit = d->hit + 1;
+			//wpa_printf(MSG_INFO, "MANA - Update %s, hit: %d", wpa_ssid_txt(ssid_ie, ssid_ie_len), d->hit);
 		}
 		wpa_printf(MSG_MSGDUMP, "MANA - Checking SSID for start of association, pass through %s", wpa_ssid_txt(ssid_ie, ssid_ie_len));
 		
